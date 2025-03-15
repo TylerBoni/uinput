@@ -4,12 +4,15 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"syscall"
 )
 
 // A Keyboard is an key event output device. It is used to
 // enable a program to simulate HID keyboard input events.
 type Keyboard interface {
 	// KeyPress will cause the key to be pressed and immediately released.
+	SendEvent(Time syscall.Timeval, Type uint16, Code uint16, Value int32, Sync bool)
+
 	KeyPress(key int) error
 
 	// KeyDown will send a keypress event to an existing keyboard device.
@@ -50,6 +53,43 @@ func CreateKeyboard(path string, name []byte) (Keyboard, error) {
 	}
 
 	return vKeyboard{name: name, deviceFile: fd}, nil
+}
+
+var (
+	keyMaxWithExtraKeys = keyMax
+)
+
+func CreateKeyboardWithExtraKeys(path string, name []byte, extraKeys []int) (Keyboard, error) {
+	err := validateDevicePath(path)
+	if err != nil {
+		return nil, err
+	}
+	err = validateUinputName(name)
+	if err != nil {
+		return nil, err
+	}
+
+	fd, err := createVKeyboardDeviceWithExtraKeys(path, name, extraKeys)
+	if err != nil {
+		return nil, err
+	}
+
+	return vKeyboard{name: name, deviceFile: fd}, nil
+}
+
+// SendEvent will send a keypress event to an existing keyboard device.
+func (vk vKeyboard) SendEvent(Time syscall.Timeval, Type uint16, Code uint16, Value int32, Sync bool) {
+	event := inputEvent{
+		Time:  Time,
+		Type:  Type,
+		Code:  Code,
+		Value: Value,
+	}
+	if Sync {
+		sendEvent(vk.deviceFile, event)
+	} else {
+		sendEventWithoutSync(vk.deviceFile, event)
+	}
 }
 
 // KeyPress will issue a single key press (push down a key and then immediately release it).
@@ -123,8 +163,47 @@ func createVKeyboardDevice(path string, name []byte) (fd *os.File, err error) {
 				Version: 1}})
 }
 
+func createVKeyboardDeviceWithExtraKeys(path string, name []byte, extraKeys []int) (fd *os.File, err error) {
+	deviceFile, err := createDeviceFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create virtual keyboard device: %v", err)
+	}
+
+	err = registerDevice(deviceFile, uintptr(evKey))
+	if err != nil {
+		deviceFile.Close()
+		return nil, fmt.Errorf("failed to register virtual keyboard device: %v", err)
+	}
+
+	// register key events
+	for i := 0; i <= keyMax; i++ {
+		err = ioctl(deviceFile, uiSetKeyBit, uintptr(i))
+		if err != nil {
+			deviceFile.Close()
+			return nil, fmt.Errorf("failed to register key number %d: %v", i, err)
+		}
+	}
+
+	for _, key := range extraKeys {
+		err = ioctl(deviceFile, uiSetKeyBit, uintptr(key))
+		if err != nil {
+			deviceFile.Close()
+			return nil, fmt.Errorf("failed to register key event %v: %v", key, err)
+		}
+	}
+
+	return createUsbDevice(deviceFile,
+		uinputUserDev{
+			Name: toUinputName(name),
+			ID: inputID{
+				Bustype: busUsb,
+				Vendor:  0x4711,
+				Product: 0x0815,
+				Version: 1}})
+}
+
 func keyCodeInRange(key int) bool {
-	return key >= keyReserved && key <= keyMax
+	return key >= keyReserved && key <= keyMaxWithExtraKeys
 }
 
 func (vk vKeyboard) FetchSyspath() (string, error) {

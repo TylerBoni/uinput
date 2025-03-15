@@ -196,6 +196,28 @@ func sendBtnEvent(deviceFile *os.File, keys []int, btnState int) (err error) {
 	return syncEvents(deviceFile)
 }
 
+func sendEvent(deviceFile *os.File, event inputEvent) (err error) {
+	err = sendEventWithoutSync(deviceFile, event)
+	if err != nil {
+		return err
+	}
+	return syncEvents(deviceFile)
+}
+
+func sendEventWithoutSync(deviceFile *os.File, event inputEvent) (err error) {
+	buf, err := inputEventToBuffer(event)
+	if err != nil {
+		return fmt.Errorf("writing abs event failed: %v", err)
+	}
+
+	_, err = deviceFile.Write(buf)
+	if err != nil {
+		return fmt.Errorf("failed to write abs event to device file: %v", err)
+	}
+
+	return nil
+}
+
 func syncEvents(deviceFile *os.File) (err error) {
 	buf, err := inputEventToBuffer(inputEvent{
 		Time:  syscall.Timeval{Sec: 0, Usec: 0},
